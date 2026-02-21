@@ -1,0 +1,25 @@
+{
+  "name": "nftg-channel-stats-bot",
+  "version": "1.0.0",
+  "description": "Telegram bot for collecting channel statistics for NFTG-ZONIX",
+  "main": "bot.js",
+  "scripts": {
+    "start": "node bot.js",
+    "dev": "nodemon bot.js",
+    "server": "node server.js"
+  },
+  "keywords": ["telegram", "bot", "statistics", "channels"],
+  "author": "NFTG-ZONIX",
+  "license": "MIT",
+  "dependencies": {
+    "telegraf": "^4.15.0",
+    "axios": "^1.6.0",
+    "dotenv": "^16.3.1",
+    "express": "^4.18.2",
+    "pg": "^8.11.3",
+    "cors": "^2.8.5"
+  },
+  "devDependencies": {
+    "nodemon": "^3.0.1"
+  }
+}
