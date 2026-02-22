@@ -1,15 +1,15 @@
 {
   "name": "nftg-channel-stats-bot",
-  "version": "1.0.0",
-  "description": "Telegram bot for collecting channel statistics for NFTG-ZONIX",
+  "version": "2.0.0",
+  "description": "Telegram bot with FSM for collecting channel statistics for NFTG-ZONIX",
   "main": "bot.js",
   "scripts": {
     "start": "node bot.js",
     "dev": "nodemon bot.js",
     "server": "node server.js",
-    "bot": "node interactive-bot.js"
+    "bot": "node bot.js"
   },
-  "keywords": ["telegram", "bot", "statistics", "channels"],
+  "keywords": ["telegram", "bot", "statistics", "channels", "fsm"],
   "author": "NFTG-ZONIX",
   "license": "MIT",
   "dependencies": {

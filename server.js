@@ -552,7 +552,116 @@ app.delete('/api/reviews/:reviewId', async (req, res) => {
         });
     }
 });
+// ==================== ДОПОЛНИТЕЛЬНЫЕ ENDPOINTS ДЛЯ БОТА ====================
+// Добавь эти endpoints в твой server.js ПЕРЕД инициализацией БД
 
+// Получить каналы пользователя (для загрузки при старте бота)
+app.get('/api/channels/user/:userId', authenticateBot, async (req, res) => {
+    const { userId } = req.params;
+    
+    try {
+        const result = await pool.query(
+            'SELECT * FROM channels WHERE owner_telegram_id = $1 ORDER BY created_at DESC',
+            [userId]
+        );
+        
+        res.json({
+            success: true,
+            channels: result.rows
+        });
+        
+    } catch (error) {
+        console.error('❌ Ошибка получения каналов пользователя:', error);
+        res.status(500).json({ 
+            error: 'Internal Server Error',
+            message: error.message 
+        });
+    }
+});
+
+// Получить все каналы (для загрузки при старте бота)
+app.get('/api/channels/all', authenticateBot, async (req, res) => {
+    try {
+        const result = await pool.query(
+            'SELECT * FROM channels ORDER BY created_at DESC'
+        );
+        
+        res.json({
+            success: true,
+            channels: result.rows
+        });
+        
+    } catch (error) {
+        console.error('❌ Ошибка получения всех каналов:', error);
+        res.status(500).json({ 
+            error: 'Internal Server Error',
+            message: error.message 
+        });
+    }
+});
+
+// Сохранить канал (без публикации)
+app.post('/api/channels/save', authenticateBot, async (req, res) => {
+    const {
+        channel_id,
+        title,
+        username,
+        subscribers_count,
+        photo_url,
+        owner_telegram_id,
+        is_published
+    } = req.body;
+    
+    try {
+        // Проверяем существует ли канал
+        const existing = await pool.query(
+            'SELECT * FROM channels WHERE channel_id = $1',
+            [channel_id]
+        );
+        
+        if (existing.rows.length > 0) {
+            // Обновляем существующий
+            const result = await pool.query(
+                `UPDATE channels 
+                 SET title = $1, username = $2, subscribers_count = $3, 
+                     photo_url = $4, last_update = NOW()
+                 WHERE channel_id = $5
+                 RETURNING *`,
+                [title, username, subscribers_count, photo_url, channel_id]
+            );
+            
+            res.json({
+                success: true,
+                action: 'updated',
+                channel: result.rows[0]
+            });
+        } else {
+            // Создаём новый
+            const result = await pool.query(
+                `INSERT INTO channels 
+                 (channel_id, title, username, subscribers_count, photo_url, 
+                  owner_telegram_id, is_published, bot_is_admin)
+                 VALUES ($1, $2, $3, $4, $5, $6, $7, true)
+                 RETURNING *`,
+                [channel_id, title, username, subscribers_count, photo_url, 
+                 owner_telegram_id, is_published || false]
+            );
+            
+            res.json({
+                success: true,
+                action: 'created',
+                channel: result.rows[0]
+            });
+        }
+        
+    } catch (error) {
+        console.error('❌ Ошибка сохранения канала:', error);
+        res.status(500).json({ 
+            error: 'Internal Server Error',
+            message: error.message 
+        });
+    }
+});
 // ==================== ИНИЦИАЛИЗАЦИЯ БД ====================
 
 async function initDatabase() {
@@ -573,6 +682,10 @@ async function initDatabase() {
             category_1 VARCHAR(100),
             category_2 VARCHAR(100),
             category_3 VARCHAR(100),
+            
+            -- Теги (массивы)
+            thematic_tags TEXT[],
+            format_tags TEXT[],
             
             -- Владелец
             owner_telegram_id BIGINT,
@@ -638,7 +751,6 @@ async function initDatabase() {
         CREATE OR REPLACE FUNCTION update_channel_rating()
         RETURNS TRIGGER AS $$
         BEGIN
-            -- Обновляем статистику канала
             UPDATE channels
             SET 
                 rating_average = (
@@ -663,7 +775,6 @@ async function initDatabase() {
         END;
         $$ LANGUAGE plpgsql;
         
-        -- Создаём триггер если не существует
         DROP TRIGGER IF EXISTS update_rating_after_review ON reviews;
         CREATE TRIGGER update_rating_after_review
         AFTER INSERT OR UPDATE OR DELETE ON reviews
