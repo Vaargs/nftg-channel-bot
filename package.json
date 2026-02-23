@@ -5,9 +5,7 @@
   "main": "bot.js",
   "scripts": {
     "start": "node bot.js",
-    "dev": "nodemon bot.js",
-    "server": "node server.js",
-    "bot": "node bot.js"
+    "dev": "nodemon bot.js"
   },
   "keywords": ["telegram", "bot", "statistics", "channels", "fsm"],
   "author": "NFTG-ZONIX",
