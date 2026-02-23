@@ -705,16 +705,42 @@ async function sendChannelToAPI(data) {
 }
 
 // Запуск бота
+console.log('⏳ Запуск Telegram бота через 3 секунды...');
+
 setTimeout(() => {
+    console.log('🚀 Инициализация бота...');
+    
+    if (!BOT_TOKEN) {
+        console.error('❌ BOT_TOKEN отсутствует!');
+        return;
+    }
+    
     bot.launch()
         .then(() => {
-            console.log('🤖 Бот запущен!');
+            console.log('✅ Бот успешно запущен!');
+            console.log(`   Bot ID: ${bot.botInfo.id}`);
             console.log(`   Username: @${bot.botInfo.username}`);
+            console.log(`   Name: ${bot.botInfo.first_name}`);
+            console.log('\n🎉 Система полностью готова!\n');
         })
         .catch(error => {
-            console.error('❌ Ошибка запуска бота:', error.message);
+            console.error('❌ Ошибка запуска бота:', error);
+            console.error('   Сообщение:', error.message);
+            console.error('   Code:', error.code || 'N/A');
+            
+            if (error.code === 409) {
+                console.error('\n⚠️ Конфликт: другой экземпляр бота уже запущен!');
+                console.error('   Остановите другие процессы или используйте webhook\n');
+            }
         });
-}, 3000); // Ждём 3 секунды чтобы API точно запустился
+}, 3000);
 
-process.once('SIGINT', () => bot.stop('SIGINT'));
-process.once('SIGTERM', () => bot.stop('SIGTERM'));
+process.once('SIGINT', () => {
+    console.log('\n👋 Остановка бота...');
+    bot.stop('SIGINT');
+});
+
+process.once('SIGTERM', () => {
+    console.log('\n👋 Остановка бота...');
+    bot.stop('SIGTERM');
+});
