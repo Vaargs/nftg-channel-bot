@@ -237,6 +237,20 @@ async function initDatabase() {
             created_at TIMESTAMP DEFAULT NOW()
         );
         
+        -- Добавляем колонки если их нет (для существующих таблиц)
+        DO $$ 
+        BEGIN
+            IF NOT EXISTS (SELECT 1 FROM information_schema.columns 
+                          WHERE table_name='channels' AND column_name='thematic_tags') THEN
+                ALTER TABLE channels ADD COLUMN thematic_tags TEXT[];
+            END IF;
+            
+            IF NOT EXISTS (SELECT 1 FROM information_schema.columns 
+                          WHERE table_name='channels' AND column_name='format_tags') THEN
+                ALTER TABLE channels ADD COLUMN format_tags TEXT[];
+            END IF;
+        END $$;
+        
         CREATE TABLE IF NOT EXISTS reviews (
             id SERIAL PRIMARY KEY,
             channel_id BIGINT NOT NULL,
@@ -267,6 +281,7 @@ async function initDatabase() {
     try {
         await pool.query(sql);
         console.log('✅ БД инициализирована');
+        console.log('✅ Колонки thematic_tags и format_tags добавлены');
     } catch (error) {
         console.error('❌ Ошибка БД:', error.message);
     }
