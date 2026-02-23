@@ -329,6 +329,9 @@ const setupChannelScene = new Scenes.WizardScene(
     
     // Этап 1: Категория
     async (ctx) => {
+        console.log('🎬 Этап 1: Выбор категории');
+        console.log('   channelData:', ctx.scene.session.channelData ? 'есть' : 'НЕТ!');
+        
         const keyboard = CATEGORIES.map(cat => [
             Markup.button.callback(cat, `cat_${cat}`)
         ]);
@@ -399,6 +402,8 @@ const setupChannelScene = new Scenes.WizardScene(
     
     // Этап 5: Превью
     async (ctx) => {
+        console.log('🎬 Этап 5: Превью');
+        
         if (ctx.message?.text) {
             const description = ctx.message.text.trim();
             
@@ -412,7 +417,15 @@ const setupChannelScene = new Scenes.WizardScene(
         
         const { category, thematic_tags, format_tags, description, channelData } = ctx.scene.session;
         
+        console.log('   Данные сессии:');
+        console.log('   - category:', category);
+        console.log('   - thematic_tags:', thematic_tags);
+        console.log('   - format_tags:', format_tags);
+        console.log('   - description:', description ? 'есть' : 'нет');
+        console.log('   - channelData:', channelData ? 'есть' : 'НЕТ!');
+        
         if (!channelData) {
+            console.error('❌ channelData потеряна!');
             await ctx.reply('❌ Ошибка: данные канала потеряны. Попробуйте /my_channels снова.');
             return ctx.scene.leave();
         }
@@ -545,7 +558,11 @@ bot.action(/^setup_(.+)$/, async (ctx) => {
         return;
     }
     
-    await ctx.scene.enter('setup_channel', { channelData: channel });
+    // Входим в сцену
+    await ctx.scene.enter('setup_channel');
+    
+    // ВАЖНО: Сохраняем channelData в session ПОСЛЕ входа
+    ctx.scene.session.channelData = channel;
 });
 
 // Добавление бота
