@@ -214,8 +214,11 @@ setupChannelScene.action(/^cat_(.+)$/, async (ctx) => {
     ctx.scene.session.thematic_tags = [];
     ctx.scene.session.themPage = 0;
     
-    await ctx.answerCbQuery(`Выбрана категория: ${category}`);
-    return ctx.wizard.selectStep(1);
+    await ctx.answerCbQuery(`✅ Выбрана: ${category}`);
+    
+    // Переходим к этапу 2 и перерисовываем
+    await ctx.wizard.selectStep(1);
+    return ctx.wizard.steps[ctx.wizard.cursor](ctx);
 });
 
 setupChannelScene.action(/^them_(.+)$/, async (ctx) => {
@@ -224,19 +227,28 @@ setupChannelScene.action(/^them_(.+)$/, async (ctx) => {
     if (action === 'prev') {
         ctx.scene.session.themPage = Math.max(0, (ctx.scene.session.themPage || 0) - 1);
         await ctx.answerCbQuery();
-        return ctx.wizard.selectStep(1);
+        await ctx.wizard.selectStep(1);
+        return ctx.wizard.steps[ctx.wizard.cursor](ctx);
     }
     
     if (action === 'next') {
         ctx.scene.session.themPage = (ctx.scene.session.themPage || 0) + 1;
         await ctx.answerCbQuery();
-        return ctx.wizard.selectStep(1);
+        await ctx.wizard.selectStep(1);
+        return ctx.wizard.steps[ctx.wizard.cursor](ctx);
     }
     
     if (action === 'done') {
-        await ctx.answerCbQuery('Переход к следующему шагу');
+        const selectedTags = ctx.scene.session.thematic_tags || [];
+        if (selectedTags.length === 0) {
+            await ctx.answerCbQuery('⚠️ Выберите хотя бы 1 тег!', { show_alert: true });
+            return;
+        }
+        
+        await ctx.answerCbQuery('✅ Переход к форматным тегам');
         ctx.scene.session.format_tags = [];
-        return ctx.wizard.selectStep(2);
+        await ctx.wizard.selectStep(2);
+        return ctx.wizard.steps[ctx.wizard.cursor](ctx);
     }
     
     // Toggle tag
@@ -245,25 +257,28 @@ setupChannelScene.action(/^them_(.+)$/, async (ctx) => {
     
     if (selectedTags.includes(tag)) {
         ctx.scene.session.thematic_tags = selectedTags.filter(t => t !== tag);
-        await ctx.answerCbQuery(`Убран: ${tag}`);
+        await ctx.answerCbQuery(`❌ Убран: ${tag}`);
     } else {
         if (selectedTags.length >= 5) {
             await ctx.answerCbQuery('⚠️ Максимум 5 тегов!', { show_alert: true });
             return;
         }
         ctx.scene.session.thematic_tags = [...selectedTags, tag];
-        await ctx.answerCbQuery(`Добавлен: ${tag}`);
+        await ctx.answerCbQuery(`✅ Добавлен: ${tag}`);
     }
     
-    return ctx.wizard.selectStep(1);
+    // Перерисовываем клавиатуру
+    await ctx.wizard.selectStep(1);
+    return ctx.wizard.steps[ctx.wizard.cursor](ctx);
 });
 
 setupChannelScene.action(/^fmt_(.+)$/, async (ctx) => {
     const action = ctx.match[1];
     
     if (action === 'done') {
-        await ctx.answerCbQuery('Переход к описанию');
-        return ctx.wizard.selectStep(3);
+        await ctx.answerCbQuery('✅ Переход к описанию');
+        await ctx.wizard.selectStep(3);
+        return ctx.wizard.steps[ctx.wizard.cursor](ctx);
     }
     
     // Toggle tag
@@ -272,17 +287,19 @@ setupChannelScene.action(/^fmt_(.+)$/, async (ctx) => {
     
     if (selectedFormats.includes(tag)) {
         ctx.scene.session.format_tags = selectedFormats.filter(t => t !== tag);
-        await ctx.answerCbQuery(`Убран: ${tag}`);
+        await ctx.answerCbQuery(`❌ Убран: ${tag}`);
     } else {
         if (selectedFormats.length >= 3) {
             await ctx.answerCbQuery('⚠️ Максимум 3 тега!', { show_alert: true });
             return;
         }
         ctx.scene.session.format_tags = [...selectedFormats, tag];
-        await ctx.answerCbQuery(`Добавлен: ${tag}`);
+        await ctx.answerCbQuery(`✅ Добавлен: ${tag}`);
     }
     
-    return ctx.wizard.selectStep(2);
+    // Перерисовываем клавиатуру
+    await ctx.wizard.selectStep(2);
+    return ctx.wizard.steps[ctx.wizard.cursor](ctx);
 });
 
 setupChannelScene.action('confirm_publish', async (ctx) => {
