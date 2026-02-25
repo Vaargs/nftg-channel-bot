@@ -4,7 +4,6 @@ require('dotenv').config();
 // ==================== API СЕРВЕР ====================
 const express = require('express');
 const cors = require('cors');
-app.use(cors());
 const { Pool } = require('pg');
 
 const apiApp = express();
