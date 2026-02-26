@@ -10,7 +10,37 @@ const apiApp = express();
 const API_PORT = process.env.PORT || 3000;
 
 // Middleware
-apiApp.use(cors());
+apiApp.use(cors({
+    origin: function(origin, callback) {
+        // Разрешаем запросы без origin (мобильные приложения, Postman)
+        if (!origin) return callback(null, true);
+        
+        const allowedPatterns = [
+            /\.vercel\.app$/,
+            /\.railway\.app$/,
+            /localhost/,
+            /127\.0\.0\.1/,
+            /telegram\.org$/,
+            /web\.telegram\.org$/
+        ];
+        
+        const isAllowed = allowedPatterns.some(pattern => pattern.test(origin));
+        
+        if (isAllowed) {
+            callback(null, true);
+        } else {
+            console.log('⚠️ CORS blocked origin:', origin);
+            callback(null, true); // Пока разрешаем всё для MVP
+        }
+    },
+    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization'],
+    credentials: true
+}));
+
+// Preflight для всех роутов
+apiApp.options('*', cors());
+
 apiApp.use(express.json());
 
 // PostgreSQL подключение
@@ -286,6 +316,88 @@ async function initDatabase() {
         console.error('❌ Ошибка БД:', error.message);
     }
 }
+
+// ==================== АЛИАСЫ БЕЗ /api/ PREFIX ====================
+// Фронтенд обращается к /channels, /channels?published=true и тд
+// Эти алиасы перенаправляют на /api/* эндпоинты
+
+apiApp.get('/channels', async (req, res) => {
+    const { published, limit = 100, category, sortBy, order } = req.query;
+    try {
+        let query = 'SELECT * FROM channels WHERE 1=1';
+        const params = [];
+        let paramIdx = 1;
+        
+        if (published === 'true') {
+            query += ` AND is_published = true`;
+        }
+        
+        if (category) {
+            query += ` AND category_1 = $${paramIdx++}`;
+            params.push(decodeURIComponent(category));
+        }
+        
+        // Сортировка
+        const validSortFields = ['subscribers_count', 'created_at', 'rating_average', 'title'];
+        const validOrders = ['ASC', 'DESC'];
+        const sortField = validSortFields.includes(sortBy) ? sortBy : 'subscribers_count';
+        const sortOrder = validOrders.includes(order?.toUpperCase()) ? order.toUpperCase() : 'DESC';
+        
+        query += ` ORDER BY ${sortField} ${sortOrder}`;
+        query += ` LIMIT $${paramIdx}`;
+        params.push(Math.min(parseInt(limit) || 100, 200)); // макс 200
+        
+        const result = await pool.query(query, params);
+        res.json({ success: true, channels: result.rows, total: result.rows.length });
+    } catch (error) {
+        console.error('❌ /channels error:', error.message);
+        res.status(500).json({ error: error.message });
+    }
+});
+
+apiApp.get('/channels/search', async (req, res) => {
+    const { q, category, limit = 50 } = req.query;
+    try {
+        let query = 'SELECT * FROM channels WHERE is_published = true';
+        const params = [];
+        let paramIdx = 1;
+        
+        if (q) {
+            query += ` AND (title ILIKE $${paramIdx} OR description ILIKE $${paramIdx} OR username ILIKE $${paramIdx})`;
+            params.push(`%${q}%`);
+            paramIdx++;
+        }
+        
+        if (category) {
+            query += ` AND category_1 = $${paramIdx++}`;
+            params.push(decodeURIComponent(category));
+        }
+        
+        query += ` ORDER BY subscribers_count DESC LIMIT $${paramIdx}`;
+        params.push(Math.min(parseInt(limit) || 50, 100));
+        
+        const result = await pool.query(query, params);
+        res.json({ success: true, channels: result.rows });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+apiApp.get('/categories', async (req, res) => {
+    try {
+        const result = await pool.query('SELECT * FROM categories ORDER BY name');
+        res.json({ success: true, categories: result.rows });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// Health check
+apiApp.get('/health', (req, res) => {
+    res.json({ status: 'ok', timestamp: new Date().toISOString() });
+});
+
+// ==================== КОНЕЦ АЛИАСОВ ====================
 
 // Запуск API сервера
 initDatabase().then(() => {
