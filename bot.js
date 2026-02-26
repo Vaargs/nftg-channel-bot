@@ -10,37 +10,7 @@ const apiApp = express();
 const API_PORT = process.env.PORT || 3000;
 
 // Middleware
-apiApp.use(cors({
-    origin: function(origin, callback) {
-        // Разрешаем запросы без origin (мобильные приложения, Postman)
-        if (!origin) return callback(null, true);
-        
-        const allowedPatterns = [
-            /\.vercel\.app$/,
-            /\.railway\.app$/,
-            /localhost/,
-            /127\.0\.0\.1/,
-            /telegram\.org$/,
-            /web\.telegram\.org$/
-        ];
-        
-        const isAllowed = allowedPatterns.some(pattern => pattern.test(origin));
-        
-        if (isAllowed) {
-            callback(null, true);
-        } else {
-            console.log('⚠️ CORS blocked origin:', origin);
-            callback(null, true); // Пока разрешаем всё для MVP
-        }
-    },
-    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization'],
-    credentials: true
-}));
-
-// Preflight для всех роутов
-apiApp.options('*', cors());
-
+apiApp.use(cors());
 apiApp.use(express.json());
 
 // PostgreSQL подключение
@@ -299,6 +269,23 @@ async function initDatabase() {
             name VARCHAR(100) UNIQUE NOT NULL,
             emoji VARCHAR(10)
         );
+
+        CREATE TABLE IF NOT EXISTS pixels (
+            id SERIAL PRIMARY KEY,
+            pixel_id INTEGER UNIQUE NOT NULL,
+            owner VARCHAR(255) NOT NULL,
+            owner_telegram_id BIGINT,
+            channel VARCHAR(255),
+            telegram_link VARCHAR(500),
+            description TEXT,
+            category VARCHAR(100),
+            thematic_tags TEXT[],
+            format_tags TEXT[],
+            image_url TEXT,
+            price DECIMAL(10,4) DEFAULT 0.01,
+            purchase_date TIMESTAMP DEFAULT NOW(),
+            last_update TIMESTAMP DEFAULT NOW()
+        );
         
         INSERT INTO categories (name, emoji) VALUES
         ('Технологии', '💻'), ('Новости', '📰'), ('Бизнес', '💼'),
@@ -317,9 +304,125 @@ async function initDatabase() {
     }
 }
 
-// ==================== АЛИАСЫ БЕЗ /api/ PREFIX ====================
-// Фронтенд обращается к /channels, /channels?published=true и тд
-// Эти алиасы перенаправляют на /api/* эндпоинты
+// ==================== PIXELS API ====================
+
+apiApp.get('/pixels', async (req, res) => {
+    try {
+        const result = await pool.query('SELECT * FROM pixels ORDER BY pixel_id ASC');
+        const pixelsMap = {};
+        result.rows.forEach(row => {
+            pixelsMap[row.pixel_id] = {
+                pixelId: row.pixel_id,
+                owner: row.owner,
+                ownerTelegramId: row.owner_telegram_id,
+                channel: row.channel,
+                telegramLink: row.telegram_link,
+                description: row.description,
+                category: row.category,
+                thematicTags: row.thematic_tags || [],
+                formatTags: row.format_tags || [],
+                imageUrl: row.image_url,
+                price: parseFloat(row.price) || 0.01,
+                purchaseDate: row.purchase_date,
+                categories: row.category ? [row.category] : []
+            };
+        });
+        res.json({ success: true, pixels: pixelsMap });
+    } catch (error) {
+        console.error('❌ GET /pixels:', error.message);
+        res.status(500).json({ error: error.message });
+    }
+});
+
+apiApp.post('/pixels/save', async (req, res) => {
+    const { pixelId, owner, ownerTelegramId, channel, telegramLink,
+            description, category, thematicTags, formatTags, imageUrl, price } = req.body;
+
+    if (!pixelId || !owner) {
+        return res.status(400).json({ error: 'pixelId and owner are required' });
+    }
+
+    try {
+        const existing = await pool.query('SELECT id FROM pixels WHERE pixel_id = $1', [pixelId]);
+        if (existing.rows.length > 0) {
+            await pool.query(
+                `UPDATE pixels SET owner=$1, owner_telegram_id=$2, channel=$3, telegram_link=$4,
+                 description=$5, category=$6, thematic_tags=$7, format_tags=$8,
+                 image_url=COALESCE($9, image_url), price=COALESCE($10, price), last_update=NOW()
+                 WHERE pixel_id=$11`,
+                [owner, ownerTelegramId, channel, telegramLink, description,
+                 category, thematicTags || [], formatTags || [], imageUrl, price, pixelId]
+            );
+            res.json({ success: true, action: 'updated' });
+        } else {
+            await pool.query(
+                `INSERT INTO pixels (pixel_id, owner, owner_telegram_id, channel, telegram_link,
+                 description, category, thematic_tags, format_tags, image_url, price)
+                 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
+                [pixelId, owner, ownerTelegramId, channel, telegramLink,
+                 description, category, thematicTags || [], formatTags || [], imageUrl, price || 0.01]
+            );
+            res.json({ success: true, action: 'created' });
+        }
+    } catch (error) {
+        console.error('❌ POST /pixels/save:', error.message);
+        res.status(500).json({ error: error.message });
+    }
+});
+
+apiApp.post('/pixels/save-many', async (req, res) => {
+    const { pixels } = req.body;
+    if (!pixels || !Array.isArray(pixels)) {
+        return res.status(400).json({ error: 'pixels array required' });
+    }
+    try {
+        for (const px of pixels) {
+            const { pixelId, owner, ownerTelegramId, channel, telegramLink,
+                    description, category, thematicTags, formatTags, price } = px;
+            const existing = await pool.query('SELECT id FROM pixels WHERE pixel_id = $1', [pixelId]);
+            if (existing.rows.length > 0) {
+                await pool.query(
+                    `UPDATE pixels SET owner=$1, channel=$2, telegram_link=$3, description=$4,
+                     category=$5, thematic_tags=$6, format_tags=$7, last_update=NOW() WHERE pixel_id=$8`,
+                    [owner, channel, telegramLink, description, category,
+                     thematicTags || [], formatTags || [], pixelId]
+                );
+            } else {
+                await pool.query(
+                    `INSERT INTO pixels (pixel_id, owner, owner_telegram_id, channel, telegram_link,
+                     description, category, thematic_tags, format_tags, price)
+                     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
+                    [pixelId, owner, ownerTelegramId, channel, telegramLink,
+                     description, category, thematicTags || [], formatTags || [], price || 0.01]
+                );
+            }
+        }
+        res.json({ success: true });
+    } catch (error) {
+        console.error('❌ POST /pixels/save-many:', error.message);
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// Обновить только картинку блока
+apiApp.patch('/pixels/:pixelId/image', async (req, res) => {
+    const { imageUrl } = req.body;
+    const pixelId = parseInt(req.params.pixelId);
+    if (!imageUrl) return res.status(400).json({ error: 'imageUrl required' });
+    try {
+        const result = await pool.query(
+            'UPDATE pixels SET image_url=$1, last_update=NOW() WHERE pixel_id=$2 RETURNING pixel_id',
+            [imageUrl, pixelId]
+        );
+        if (result.rowCount === 0) return res.status(404).json({ error: 'Pixel not found' });
+        res.json({ success: true, pixelId, imageUrl });
+    } catch (error) {
+        console.error('❌ PATCH /pixels image:', error.message);
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// ==================== CHANNELS ALIASES (без /api/) ====================
 
 apiApp.get('/channels', async (req, res) => {
     const { published, limit = 100, category, sortBy, order } = req.query;
@@ -327,57 +430,16 @@ apiApp.get('/channels', async (req, res) => {
         let query = 'SELECT * FROM channels WHERE 1=1';
         const params = [];
         let paramIdx = 1;
-        
-        if (published === 'true') {
-            query += ` AND is_published = true`;
-        }
-        
-        if (category) {
-            query += ` AND category_1 = $${paramIdx++}`;
-            params.push(decodeURIComponent(category));
-        }
-        
-        // Сортировка
+        if (published === 'true') query += ` AND is_published = true`;
+        if (category) { query += ` AND category_1 = $${paramIdx++}`; params.push(decodeURIComponent(category)); }
         const validSortFields = ['subscribers_count', 'created_at', 'rating_average', 'title'];
         const validOrders = ['ASC', 'DESC'];
         const sortField = validSortFields.includes(sortBy) ? sortBy : 'subscribers_count';
         const sortOrder = validOrders.includes(order?.toUpperCase()) ? order.toUpperCase() : 'DESC';
-        
-        query += ` ORDER BY ${sortField} ${sortOrder}`;
-        query += ` LIMIT $${paramIdx}`;
-        params.push(Math.min(parseInt(limit) || 100, 200)); // макс 200
-        
+        query += ` ORDER BY ${sortField} ${sortOrder} LIMIT $${paramIdx}`;
+        params.push(Math.min(parseInt(limit) || 100, 200));
         const result = await pool.query(query, params);
         res.json({ success: true, channels: result.rows, total: result.rows.length });
-    } catch (error) {
-        console.error('❌ /channels error:', error.message);
-        res.status(500).json({ error: error.message });
-    }
-});
-
-apiApp.get('/channels/search', async (req, res) => {
-    const { q, category, limit = 50 } = req.query;
-    try {
-        let query = 'SELECT * FROM channels WHERE is_published = true';
-        const params = [];
-        let paramIdx = 1;
-        
-        if (q) {
-            query += ` AND (title ILIKE $${paramIdx} OR description ILIKE $${paramIdx} OR username ILIKE $${paramIdx})`;
-            params.push(`%${q}%`);
-            paramIdx++;
-        }
-        
-        if (category) {
-            query += ` AND category_1 = $${paramIdx++}`;
-            params.push(decodeURIComponent(category));
-        }
-        
-        query += ` ORDER BY subscribers_count DESC LIMIT $${paramIdx}`;
-        params.push(Math.min(parseInt(limit) || 50, 100));
-        
-        const result = await pool.query(query, params);
-        res.json({ success: true, channels: result.rows });
     } catch (error) {
         res.status(500).json({ error: error.message });
     }
@@ -392,12 +454,11 @@ apiApp.get('/categories', async (req, res) => {
     }
 });
 
-// Health check
 apiApp.get('/health', (req, res) => {
     res.json({ status: 'ok', timestamp: new Date().toISOString() });
 });
 
-// ==================== КОНЕЦ АЛИАСОВ ====================
+// ==================== ЗАПУСК API ====================
 
 // Запуск API сервера
 initDatabase().then(() => {
