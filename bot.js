@@ -94,22 +94,22 @@ apiApp.post('/api/channels/update-stats', authenticateBot, async (req, res) => {
             const result = await pool.query(
                 `UPDATE channels SET title = $1, username = $2, description = $3, 
                  subscribers_count = $4, photo_url = $5, category_1 = $6, 
-                 thematic_tags = $7, format_tags = $8, is_published = $9, 
-                 last_update = NOW() WHERE channel_id = $10 RETURNING *`,
+                 thematic_tags = $7, format_tags = $8, is_published = $9, language = $10,
+                 last_update = NOW() WHERE channel_id = $11 RETURNING *`,
                 [data.title, data.username, data.description, data.subscribers_count, 
                  data.photo_url, data.category_1, data.thematic_tags, data.format_tags, 
-                 data.is_published, data.channel_id]
+                 data.is_published, data.language || null, data.channel_id]
             );
             res.json({ success: true, action: 'updated', channel: result.rows[0] });
         } else {
             const result = await pool.query(
                 `INSERT INTO channels (channel_id, title, username, description, subscribers_count, 
-                 photo_url, category_1, thematic_tags, format_tags, owner_telegram_id, 
+                 photo_url, category_1, thematic_tags, format_tags, language, owner_telegram_id, 
                  owner_username, is_published, bot_is_admin) 
-                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, true) RETURNING *`,
+                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, true) RETURNING *`,
                 [data.channel_id, data.title, data.username, data.description, 
                  data.subscribers_count, data.photo_url, data.category_1, data.thematic_tags, 
-                 data.format_tags, data.owner_telegram_id, data.owner_username, data.is_published]
+                 data.format_tags, data.language || null, data.owner_telegram_id, data.owner_username, data.is_published]
             );
             res.json({ success: true, action: 'created', channel: result.rows[0] });
         }
@@ -248,6 +248,11 @@ async function initDatabase() {
             IF NOT EXISTS (SELECT 1 FROM information_schema.columns 
                           WHERE table_name='channels' AND column_name='format_tags') THEN
                 ALTER TABLE channels ADD COLUMN format_tags TEXT[];
+            END IF;
+
+            IF NOT EXISTS (SELECT 1 FROM information_schema.columns
+                          WHERE table_name='channels' AND column_name='language') THEN
+                ALTER TABLE channels ADD COLUMN language VARCHAR(10);
             END IF;
         END $$;
         
@@ -511,6 +516,19 @@ const FORMAT_TAGS = [
     'подборки', 'стримы', 'live', 'подкаст', 'инсайды'
 ];
 
+const LANGUAGES = [
+    { code: 'RU', label: '🇷🇺 Русский' },
+    { code: 'EN', label: '🇬🇧 English' },
+    { code: 'UK', label: '🇺🇦 Українська' },
+    { code: 'KZ', label: '🇰🇿 Қазақша' },
+    { code: 'DE', label: '🇩🇪 Deutsch' },
+    { code: 'FR', label: '🇫🇷 Français' },
+    { code: 'ES', label: '🇪🇸 Español' },
+    { code: 'ZH', label: '🇨🇳 中文' },
+    { code: 'AR', label: '🇸🇦 العربية' },
+    { code: 'OTHER', label: '🌍 Другой' }
+];
+
 // FSM Сцена
 const setupChannelScene = new Scenes.WizardScene(
     'setup_channel',
@@ -525,7 +543,7 @@ const setupChannelScene = new Scenes.WizardScene(
         ]);
         
         await ctx.editMessageText(
-            '<b>📂 Шаг 1/4: Выберите категорию</b>',
+            '<b>📂 Шаг 1/5: Выберите категорию</b>',
             { parse_mode: 'HTML', ...Markup.inlineKeyboard(keyboard) }
         );
         
@@ -548,7 +566,7 @@ const setupChannelScene = new Scenes.WizardScene(
         }
         
         await ctx.editMessageText(
-            `<b>🏷 Шаг 2/4: Тематика</b>\n\n` +
+            `<b>🏷 Шаг 2/5: Тематика</b>\n\n` +
             `Категория: <b>${category}</b>\n` +
             `Выбрано: <b>${selectedTags.length}/5</b>`,
             { parse_mode: 'HTML', ...Markup.inlineKeyboard(keyboard) }
@@ -570,7 +588,7 @@ const setupChannelScene = new Scenes.WizardScene(
         keyboard.push([Markup.button.callback('✅ Далее', 'fmt_done')]);
         
         await ctx.editMessageText(
-            `<b>📋 Шаг 3/4: Формат</b>\n\n` +
+            `<b>📋 Шаг 3/5: Формат</b>\n\n` +
             `Выбрано: <b>${selectedFormats.length}/3</b>`,
             { parse_mode: 'HTML', ...Markup.inlineKeyboard(keyboard) }
         );
@@ -578,10 +596,27 @@ const setupChannelScene = new Scenes.WizardScene(
         return ctx.wizard.next();
     },
     
-    // Этап 4: Описание
+    // Этап 4: Язык
+    async (ctx) => {
+        const selectedLang = ctx.scene.session.language;
+        const keyboard = LANGUAGES.map(l => {
+            const isSelected = selectedLang === l.code;
+            return [Markup.button.callback(isSelected ? `✅ ${l.label}` : l.label, `lang_${l.code}`)];
+        });
+        keyboard.push([Markup.button.callback('⏭ Пропустить', 'lang_skip')]);
+
+        await ctx.editMessageText(
+            '<b>🌐 Шаг 4/5: Язык канала</b>\n\nНа каком языке ведётся канал?',
+            { parse_mode: 'HTML', ...Markup.inlineKeyboard(keyboard) }
+        );
+
+        return ctx.wizard.next();
+    },
+
+    // Этап 5: Описание
     async (ctx) => {
         await ctx.editMessageText(
-            '<b>📝 Шаг 4/4: Описание</b>\n\nНапишите описание (макс 300 символов):',
+            '<b>📝 Шаг 5/5: Описание</b>\n\nНапишите описание (макс 300 символов):',
             { parse_mode: 'HTML' }
         );
         
@@ -603,7 +638,7 @@ const setupChannelScene = new Scenes.WizardScene(
             ctx.scene.session.description = description;
         }
         
-        const { category, thematic_tags, format_tags, description, channelData } = ctx.scene.session;
+        const { category, thematic_tags, format_tags, language, description, channelData } = ctx.scene.session;
         
         console.log('   Данные сессии:');
         console.log('   - category:', category);
@@ -624,7 +659,8 @@ const setupChannelScene = new Scenes.WizardScene(
             `👥 ${channelData.subscribers_count?.toLocaleString() || 0}\n\n` +
             `📂 ${category}\n` +
             `🏷 ${thematic_tags?.join(', ') || ''}\n` +
-            `📋 ${format_tags?.join(', ') || ''}\n\n` +
+            `📋 ${format_tags?.join(', ') || ''}\n` +
+            `🌐 ${language || '—'}\n\n` +
             `📝 ${description || ''}`;
         
         await ctx.reply(preview, {
@@ -698,6 +734,18 @@ setupChannelScene.action(/^fmt_(.+)$/, async (ctx) => {
     
     await ctx.answerCbQuery();
     await ctx.wizard.selectStep(2);
+    return ctx.wizard.steps[ctx.wizard.cursor](ctx);
+});
+
+setupChannelScene.action(/^lang_(.+)$/, async (ctx) => {
+    const code = ctx.match[1];
+    if (code !== 'skip') {
+        ctx.scene.session.language = code;
+    } else {
+        ctx.scene.session.language = null;
+    }
+    await ctx.answerCbQuery();
+    await ctx.wizard.selectStep(4);
     return ctx.wizard.steps[ctx.wizard.cursor](ctx);
 });
 
@@ -817,7 +865,7 @@ async function showMyChannels(ctx) {
 }
 
 async function publishChannel(ctx) {
-    const { category, thematic_tags, format_tags, description, channelData } = ctx.scene.session;
+    const { category, thematic_tags, format_tags, language, description, channelData } = ctx.scene.session;
     
     await ctx.reply('⏳ Публикую...');
     
@@ -832,6 +880,7 @@ async function publishChannel(ctx) {
             category_1: category,
             thematic_tags: thematic_tags,
             format_tags: format_tags,
+            language: language,
             owner_telegram_id: ctx.from.id,
             owner_username: ctx.from.username,
             is_published: true
