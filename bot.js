@@ -256,6 +256,24 @@ async function initDatabase() {
             END IF;
         END $$;
         
+        CREATE TABLE IF NOT EXISTS listings (
+            id SERIAL PRIMARY KEY,
+            pixel_id INTEGER NOT NULL REFERENCES pixels(pixel_id) ON DELETE CASCADE,
+            seller_address VARCHAR(255) NOT NULL,
+            seller_telegram_id BIGINT,
+            price DECIMAL(12,4) NOT NULL,
+            status VARCHAR(20) DEFAULT 'active' CHECK (status IN ('active', 'sold', 'cancelled')),
+            buyer_address VARCHAR(255),
+            buyer_telegram_id BIGINT,
+            tx_hash VARCHAR(500),
+            created_at TIMESTAMP DEFAULT NOW(),
+            updated_at TIMESTAMP DEFAULT NOW(),
+            sold_at TIMESTAMP,
+            UNIQUE(pixel_id, status) DEFERRABLE INITIALLY DEFERRED
+        );
+        CREATE INDEX IF NOT EXISTS idx_listings_status ON listings(status);
+        CREATE INDEX IF NOT EXISTS idx_listings_pixel_id ON listings(pixel_id);
+
         CREATE TABLE IF NOT EXISTS reviews (
             id SERIAL PRIMARY KEY,
             channel_id BIGINT NOT NULL,
@@ -456,6 +474,178 @@ apiApp.get('/categories', async (req, res) => {
         res.json({ success: true, categories: result.rows });
     } catch (error) {
         res.status(500).json({ error: error.message });
+    }
+});
+
+// ==================== LISTINGS API (ТОРГОВЛЯ) ====================
+
+// GET /listings — все активные листинги (для фронта при загрузке)
+apiApp.get('/listings', async (req, res) => {
+    try {
+        const result = await pool.query(`
+            SELECT l.*, p.owner as current_owner, p.channel, p.image_url
+            FROM listings l
+            JOIN pixels p ON l.pixel_id = p.pixel_id
+            WHERE l.status = 'active'
+            ORDER BY l.created_at DESC
+        `);
+        // Возвращаем как объект pixelId -> listing для быстрого доступа
+        const listingsMap = {};
+        result.rows.forEach(row => {
+            listingsMap[row.pixel_id] = {
+                id: row.id,
+                pixelId: row.pixel_id,
+                sellerAddress: row.seller_address,
+                sellerTelegramId: row.seller_telegram_id,
+                price: parseFloat(row.price),
+                status: row.status,
+                createdAt: row.created_at
+            };
+        });
+        res.json({ success: true, listings: listingsMap });
+    } catch (error) {
+        console.error('GET /listings error:', error);
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// POST /listings — выставить пиксель(и) на продажу
+apiApp.post('/listings', async (req, res) => {
+    const { pixelIds, price, sellerAddress, sellerTelegramId } = req.body;
+    if (!pixelIds || !price || !sellerAddress) {
+        return res.status(400).json({ error: 'pixelIds, price, sellerAddress required' });
+    }
+    const ids = Array.isArray(pixelIds) ? pixelIds : [pixelIds];
+    try {
+        const client = await pool.connect();
+        try {
+            await client.query('BEGIN');
+            const inserted = [];
+            for (const pixelId of ids) {
+                // Проверяем что пиксель принадлежит продавцу
+                const px = await client.query(
+                    'SELECT owner, owner_telegram_id FROM pixels WHERE pixel_id = $1',
+                    [pixelId]
+                );
+                if (!px.rows.length) throw new Error(`Pixel ${pixelId} not found`);
+                const pixel = px.rows[0];
+                if (pixel.owner !== sellerAddress && pixel.owner_telegram_id?.toString() !== sellerTelegramId?.toString()) {
+                    throw new Error(`Pixel ${pixelId} does not belong to seller`);
+                }
+                // Снимаем старые активные листинги для этого пикселя
+                await client.query(
+                    `UPDATE listings SET status = 'cancelled', updated_at = NOW() WHERE pixel_id = $1 AND status = 'active'`,
+                    [pixelId]
+                );
+                // Добавляем новый листинг
+                const res2 = await client.query(
+                    `INSERT INTO listings (pixel_id, seller_address, seller_telegram_id, price)
+                     VALUES ($1, $2, $3, $4) RETURNING *`,
+                    [pixelId, sellerAddress, sellerTelegramId || null, price]
+                );
+                inserted.push(res2.rows[0]);
+            }
+            await client.query('COMMIT');
+            res.json({ success: true, listings: inserted });
+        } catch (e) {
+            await client.query('ROLLBACK');
+            throw e;
+        } finally {
+            client.release();
+        }
+    } catch (error) {
+        console.error('POST /listings error:', error);
+        res.status(400).json({ error: error.message });
+    }
+});
+
+// PATCH /listings/:pixelId/price — изменить цену
+apiApp.patch('/listings/:pixelId/price', async (req, res) => {
+    const { pixelId } = req.params;
+    const { price, sellerAddress, sellerTelegramId } = req.body;
+    if (!price) return res.status(400).json({ error: 'price required' });
+    try {
+        const result = await pool.query(
+            `UPDATE listings SET price = $1, updated_at = NOW()
+             WHERE pixel_id = $2 AND status = 'active' AND (seller_address = $3 OR seller_telegram_id = $4)
+             RETURNING *`,
+            [price, pixelId, sellerAddress, sellerTelegramId || null]
+        );
+        if (!result.rows.length) return res.status(404).json({ error: 'Listing not found or not yours' });
+        res.json({ success: true, listing: result.rows[0] });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// DELETE /listings/:pixelId — снять с продажи
+apiApp.delete('/listings/:pixelId', async (req, res) => {
+    const { pixelId } = req.params;
+    const { sellerAddress, sellerTelegramId } = req.body;
+    try {
+        const result = await pool.query(
+            `UPDATE listings SET status = 'cancelled', updated_at = NOW()
+             WHERE pixel_id = $1 AND status = 'active' AND (seller_address = $2 OR seller_telegram_id = $3)
+             RETURNING *`,
+            [pixelId, sellerAddress || '', sellerTelegramId || null]
+        );
+        if (!result.rows.length) return res.status(404).json({ error: 'Listing not found or not yours' });
+        res.json({ success: true });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// POST /listings/:pixelId/buy — подтвердить покупку (после TON транзакции)
+// Фронтенд вызывает этот эндпоинт после успешной отправки TON
+apiApp.post('/listings/:pixelId/buy', async (req, res) => {
+    const { pixelId } = req.params;
+    const { buyerAddress, buyerTelegramId, txHash, channel, telegramLink, description } = req.body;
+    if (!buyerAddress) return res.status(400).json({ error: 'buyerAddress required' });
+    const client = await pool.connect();
+    try {
+        await client.query('BEGIN');
+
+        // Получаем листинг
+        const listingRes = await client.query(
+            `SELECT * FROM listings WHERE pixel_id = $1 AND status = 'active' FOR UPDATE`,
+            [pixelId]
+        );
+        if (!listingRes.rows.length) {
+            await client.query('ROLLBACK');
+            return res.status(404).json({ error: 'Listing not found or already sold' });
+        }
+        const listing = listingRes.rows[0];
+
+        // Помечаем листинг как проданный
+        await client.query(
+            `UPDATE listings SET status = 'sold', buyer_address = $1, buyer_telegram_id = $2,
+             tx_hash = $3, sold_at = NOW(), updated_at = NOW() WHERE id = $4`,
+            [buyerAddress, buyerTelegramId || null, txHash || null, listing.id]
+        );
+
+        // Обновляем владельца пикселя
+        await client.query(
+            `UPDATE pixels SET owner = $1, owner_telegram_id = $2,
+             channel = COALESCE($3, channel),
+             telegram_link = COALESCE($4, telegram_link),
+             description = COALESCE($5, description),
+             last_update = NOW()
+             WHERE pixel_id = $6`,
+            [buyerAddress, buyerTelegramId || null,
+             channel || null, telegramLink || null, description || null,
+             pixelId]
+        );
+
+        await client.query('COMMIT');
+        console.log(`✅ Trade: pixel #${pixelId} sold to ${buyerAddress} for ${listing.price} TON`);
+        res.json({ success: true, price: listing.price, sellerAddress: listing.seller_address });
+    } catch (error) {
+        await client.query('ROLLBACK');
+        console.error('POST /listings/buy error:', error);
+        res.status(500).json({ error: error.message });
+    } finally {
+        client.release();
     }
 });
 
