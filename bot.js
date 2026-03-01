@@ -262,6 +262,9 @@ async function initDatabase() {
             seller_address VARCHAR(255) NOT NULL,
             seller_telegram_id BIGINT,
             price DECIMAL(12,4) NOT NULL,
+            seller_amount DECIMAL(12,4),    -- сколько получил продавец (price * 0.95)
+            commission_amount DECIMAL(12,4), -- комиссия платформы (price * 0.05)
+            commission_pct DECIMAL(4,2) DEFAULT 5.00, -- % комиссии
             status VARCHAR(20) DEFAULT 'active' CHECK (status IN ('active', 'sold', 'cancelled')),
             buyer_address VARCHAR(255),
             buyer_telegram_id BIGINT,
@@ -596,8 +599,11 @@ apiApp.delete('/listings/:pixelId', async (req, res) => {
     }
 });
 
-// POST /listings/:pixelId/buy — подтвердить покупку (после TON транзакции)
-// Фронтенд вызывает этот эндпоинт после успешной отправки TON
+// POST /listings/:pixelId/buy — подтвердить покупку (после split TON транзакции)
+// Деньги уже ушли напрямую: продавцу (95%) + платформе (5%)
+// Этот эндпоинт только фиксирует факт сделки и меняет владельца
+const MARKET_COMMISSION = 0.05; // 5% — должно совпадать с фронтом
+
 apiApp.post('/listings/:pixelId/buy', async (req, res) => {
     const { pixelId } = req.params;
     const { buyerAddress, buyerTelegramId, txHash, channel, telegramLink, description } = req.body;
@@ -616,21 +622,37 @@ apiApp.post('/listings/:pixelId/buy', async (req, res) => {
             return res.status(404).json({ error: 'Listing not found or already sold' });
         }
         const listing = listingRes.rows[0];
+        const price = parseFloat(listing.price);
+        const sellerAmount     = parseFloat((price * (1 - MARKET_COMMISSION)).toFixed(4));
+        const commissionAmount = parseFloat((price * MARKET_COMMISSION).toFixed(4));
 
-        // Помечаем листинг как проданный
+        // Помечаем листинг как проданный — фиксируем split
         await client.query(
-            `UPDATE listings SET status = 'sold', buyer_address = $1, buyer_telegram_id = $2,
-             tx_hash = $3, sold_at = NOW(), updated_at = NOW() WHERE id = $4`,
-            [buyerAddress, buyerTelegramId || null, txHash || null, listing.id]
+            `UPDATE listings SET
+                status = 'sold',
+                buyer_address = $1,
+                buyer_telegram_id = $2,
+                tx_hash = $3,
+                seller_amount = $4,
+                commission_amount = $5,
+                commission_pct = $6,
+                sold_at = NOW(),
+                updated_at = NOW()
+             WHERE id = $7`,
+            [buyerAddress, buyerTelegramId || null, txHash || null,
+             sellerAmount, commissionAmount, (MARKET_COMMISSION * 100).toFixed(2),
+             listing.id]
         );
 
-        // Обновляем владельца пикселя
+        // Меняем владельца пикселя
         await client.query(
-            `UPDATE pixels SET owner = $1, owner_telegram_id = $2,
-             channel = COALESCE($3, channel),
-             telegram_link = COALESCE($4, telegram_link),
-             description = COALESCE($5, description),
-             last_update = NOW()
+            `UPDATE pixels SET
+                owner = $1,
+                owner_telegram_id = $2,
+                channel = COALESCE($3, channel),
+                telegram_link = COALESCE($4, telegram_link),
+                description = COALESCE($5, description),
+                last_update = NOW()
              WHERE pixel_id = $6`,
             [buyerAddress, buyerTelegramId || null,
              channel || null, telegramLink || null, description || null,
@@ -638,8 +660,20 @@ apiApp.post('/listings/:pixelId/buy', async (req, res) => {
         );
 
         await client.query('COMMIT');
-        console.log(`✅ Trade: pixel #${pixelId} sold to ${buyerAddress} for ${listing.price} TON`);
-        res.json({ success: true, price: listing.price, sellerAddress: listing.seller_address });
+
+        console.log(
+            `✅ Trade #${pixelId}: ${price} TON | ` +
+            `seller ${listing.seller_address.slice(0,8)}… → ${sellerAmount} TON | ` +
+            `platform → ${commissionAmount} TON`
+        );
+
+        res.json({
+            success: true,
+            price,
+            sellerAmount,
+            commissionAmount,
+            sellerAddress: listing.seller_address
+        });
     } catch (error) {
         await client.query('ROLLBACK');
         console.error('POST /listings/buy error:', error);
@@ -651,6 +685,24 @@ apiApp.post('/listings/:pixelId/buy', async (req, res) => {
 
 apiApp.get('/health', (req, res) => {
     res.json({ status: 'ok', timestamp: new Date().toISOString() });
+});
+
+// GET /listings/stats — статистика торговли (для дашборда)
+apiApp.get('/listings/stats', async (req, res) => {
+    try {
+        const result = await pool.query(`
+            SELECT
+                COUNT(*) FILTER (WHERE status = 'active')  AS active_count,
+                COUNT(*) FILTER (WHERE status = 'sold')    AS sold_count,
+                SUM(price) FILTER (WHERE status = 'sold')  AS total_volume,
+                SUM(commission_amount) FILTER (WHERE status = 'sold') AS total_commission,
+                SUM(seller_amount) FILTER (WHERE status = 'sold')     AS total_to_sellers
+            FROM listings
+        `);
+        res.json({ success: true, stats: result.rows[0] });
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
 });
 
 // ==================== ЗАПУСК API ====================
